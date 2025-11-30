@@ -2,8 +2,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import Base, engine
 from app.routers import (
-    auth, products, orders, custom_orders, payments,
-    workers, coupons, banners, reports, admin
+    auth,
+    customers,
+    products,
+    cart,
+    orders,
+    custom_orders,
+    workers,
+    payments,
+    reports,
+    coupons,
+    banners,
+    admin
 )
 
 # ----------------------------
@@ -21,11 +31,11 @@ app = FastAPI(
 )
 
 # ----------------------------
-# CORS Middleware (optional)
+# CORS Middleware
 # ----------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change to frontend URL in production
+    allow_origins=["*"],  # Change to frontend domain in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,14 +45,16 @@ app.add_middleware(
 # Include Routers
 # ----------------------------
 app.include_router(auth.router)
+app.include_router(customers.router)
 app.include_router(products.router)
+app.include_router(cart.router)
 app.include_router(orders.router)
 app.include_router(custom_orders.router)
-app.include_router(payments.router)
 app.include_router(workers.router)
+app.include_router(payments.router)
+app.include_router(reports.router)
 app.include_router(coupons.router)
 app.include_router(banners.router)
-app.include_router(reports.router)
 app.include_router(admin.router)
 
 # ----------------------------
