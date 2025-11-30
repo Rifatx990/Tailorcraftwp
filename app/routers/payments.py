@@ -1,35 +1,93 @@
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, Request, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.payment import Payment
-from app.utils.security import create_access_token
-from app.config import settings
-import requests
+from app.models.order import Order
+from app.models.custom_order import CustomOrder
+from app.models.auth import Customer
+from app.utils.tasks import send_order_confirmation_email, send_custom_order_notification
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
-SSLCZ_API = "https://sandbox.sslcommerz.com/gwprocess/v4/api.php"
+# ----------------------------
+# Payment Success
+# ----------------------------
+@router.post("/success")
+async def payment_success(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    form = await request.form()
+    tran_id = form.get("tran_id")
+    val_id = form.get("val_id")
+    status = form.get("status", "SUCCESS")
 
-@router.post("/initiate")
-def initiate_payment(order_id: int = None, custom_order_id: int = None, amount: float = 0.0, db: Session = Depends(get_db)):
-    data = {
-        "store_id": settings.SSLCZ_STORE_ID,
-        "store_passwd": settings.SSLCZ_STORE_PASS,
-        "total_amount": amount,
-        "currency": "BDT",
-        "tran_id": f"TC-{order_id or custom_order_id}-{int(amount*1000)}",
-        "success_url": f"{settings.BASE_URL}/payments/success",
-        "fail_url": f"{settings.BASE_URL}/payments/fail",
-        "cancel_url": f"{settings.BASE_URL}/payments/cancel",
-        "emi_option": 0
-    }
-    response = requests.post(SSLCZ_API, data=data)
-    return response.json()
+    payment = db.query(Payment).filter(Payment.tran_id == tran_id).first()
+    if payment:
+        payment.status = status
+        payment.val_id = val_id
+        db.commit()
+        db.refresh(payment)
 
-@router.post("/ipn")
-def sslcommerz_ipn(tran_id: str, val_id: str, status: str, db: Session = Depends(get_db)):
-    payment = Payment(tran_id=tran_id, val_id=val_id, amount=0, status=status)
-    db.add(payment)
-    db.commit()
-    db.refresh(payment)
-    return {"message": "IPN received"}
+        # Update associated order or custom order
+        if payment.order_id:
+            order = db.query(Order).filter(Order.id == payment.order_id).first()
+            if order:
+                order.payment_status = "PAID"
+                db.commit()
+                # Send email to customer
+                customer = db.query(Customer).filter(Customer.id == order.customer_id).first()
+                if customer:
+                    send_order_confirmation_email(background_tasks, customer.email, order.id)
+
+        elif payment.custom_order_id:
+            custom_order = db.query(CustomOrder).filter(CustomOrder.id == payment.custom_order_id).first()
+            if custom_order:
+                custom_order.status = "PAID"
+                db.commit()
+                customer = db.query(Customer).filter(Customer.id == custom_order.customer_id).first()
+                if customer:
+                    send_custom_order_notification(background_tasks, customer.email, custom_order.id)
+
+    return {"message": "Payment successful", "tran_id": tran_id, "status": status}
+
+
+# ----------------------------
+# Payment Fail
+# ----------------------------
+@router.post("/fail")
+async def payment_fail(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    form = await request.form()
+    tran_id = form.get("tran_id")
+    status = form.get("status", "FAILED")
+
+    payment = db.query(Payment).filter(Payment.tran_id == tran_id).first()
+    if payment:
+        payment.status = status
+        db.commit()
+        db.refresh(payment)
+    return {"message": "Payment failed", "tran_id": tran_id, "status": status}
+
+
+# ----------------------------
+# Payment Cancel
+# ----------------------------
+@router.post("/cancel")
+async def payment_cancel(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    form = await request.form()
+    tran_id = form.get("tran_id")
+    status = form.get("status", "CANCELLED")
+
+    payment = db.query(Payment).filter(Payment.tran_id == tran_id).first()
+    if payment:
+        payment.status = status
+        db.commit()
+        db.refresh(payment)
+    return {"message": "Payment cancelled", "tran_id": tran_id, "status": status}
